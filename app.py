@@ -5,6 +5,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import ChatPromptTemplate
 from langchain.output_parsers import ResponseSchema, StructuredOutputParser
+from shopify_connector import ShopifyConnector, test_connection
 
 # ==========================================
 # PART 1: THE EVALY INTELLIGENCE ENGINE
@@ -157,6 +158,34 @@ with st.sidebar:
     st.divider()
     st.info("**Supported Models:**\n- Dropshipping\n- Amazon FBA\n- TikTok Shop\n- Private Label\n- Wholesale")
 
+    # --- SHOPIFY INTEGRATION ---
+    st.divider()
+    st.markdown("### 🛍️ Shopify Integration")
+
+    shopify_enabled = st.checkbox("Connect to Shopify Store")
+
+    if shopify_enabled:
+        shopify_url = st.text_input("Store URL", placeholder="mystore.myshopify.com", help="Your Shopify store domain")
+        shopify_token = st.text_input("Admin API Token", type="password", help="Get this from Shopify Admin > Apps > Develop apps")
+
+        if st.button("Test Connection", use_container_width=True):
+            if shopify_url and shopify_token:
+                with st.spinner("Testing connection..."):
+                    success, message = test_connection(shopify_url, shopify_token)
+                    if success:
+                        st.success(message)
+                        st.session_state['shopify_connected'] = True
+                        st.session_state['shopify_url'] = shopify_url
+                        st.session_state['shopify_token'] = shopify_token
+                    else:
+                        st.error(message)
+                        st.session_state['shopify_connected'] = False
+            else:
+                st.warning("Please enter both Store URL and API Token")
+    else:
+        if 'shopify_connected' in st.session_state:
+            st.session_state['shopify_connected'] = False
+
 # --- MAIN APP ---
 st.title(f"⚡ Evaly Product Intelligence")
 
@@ -169,21 +198,77 @@ with col2:
     platform = st.selectbox("2. Select Platform", 
         ["Shopify", "Amazon", "TikTok Shop", "Etsy", "WooCommerce", "Native Ads (Taboola/Outbrain)"])
 
-# STEP 2: PRODUCT DETAILS
+# STEP 2: SHOPIFY PRODUCTS (if connected)
+if st.session_state.get('shopify_connected', False):
+    with st.expander("🛍️ Load Product from Shopify", expanded=False):
+        col_a, col_b = st.columns([3, 1])
+        with col_a:
+            if st.button("📦 Fetch Products", use_container_width=True):
+                with st.spinner("Fetching products from Shopify..."):
+                    connector = ShopifyConnector(
+                        st.session_state['shopify_url'],
+                        st.session_state['shopify_token']
+                    )
+                    if connector.connect():
+                        products = connector.get_products(limit=50)
+                        st.session_state['shopify_products'] = products
+                        connector.disconnect()
+                        st.success(f"✅ Loaded {len(products)} products")
+                    else:
+                        st.error("Failed to fetch products")
+
+        if 'shopify_products' in st.session_state and st.session_state['shopify_products']:
+            product_options = {f"{p['name']} (${p['price']})": p for p in st.session_state['shopify_products']}
+            selected = st.selectbox("Select Product", options=list(product_options.keys()))
+
+            if selected:
+                selected_product = product_options[selected]
+                st.session_state['selected_shopify_product'] = selected_product
+
+                # Display product info
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Price", f"${selected_product['price']}")
+                with col2:
+                    st.metric("Status", selected_product['status'])
+                with col3:
+                    st.metric("Inventory", selected_product['inventory_quantity'])
+
+                if selected_product['image_url']:
+                    st.image(selected_product['image_url'], width=200)
+
+                st.caption(f"SKU: {selected_product['sku']} | Type: {selected_product['product_type']}")
+
+# STEP 3: PRODUCT DETAILS
 with st.expander("3. Enter Product Details", expanded=True):
+    # Auto-fill if Shopify product selected
+    default_name = "Example: Red Light Therapy Belt"
+    default_price = 129.0
+    default_cost = 28.0
+
+    if st.session_state.get('selected_shopify_product'):
+        sp = st.session_state['selected_shopify_product']
+        default_name = sp['name']
+        default_price = float(sp['price'])
+        # Estimate cost as 30% of price if no compare_at_price
+        if sp['compare_at_price']:
+            default_cost = float(sp['compare_at_price']) * 0.3
+        else:
+            default_cost = default_price * 0.3
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        p_name = st.text_input("Product Name / URL", "Example: Red Light Therapy Belt")
+        p_name = st.text_input("Product Name / URL", default_name)
     with c2:
-        cost = st.number_input("Landed Cost (COGS + Shipping)", 0.0, value=28.0)
-        price = st.number_input("Target Sale Price", 0.0, value=129.0)
+        cost = st.number_input("Landed Cost (COGS + Shipping)", 0.0, value=default_cost)
+        price = st.number_input("Target Sale Price", 0.0, value=default_price)
     with c3:
         # Just a visual element for the user
         st.selectbox("Risk Tolerance / Budget", ["Low (<$500)", "Medium ($1k-$5k)", "High ($10k+)"])
-        
+
     start_btn = st.button("🚀 RUN EVALY ANALYSIS", type="primary", use_container_width=True)
 
-# STEP 3: RESULTS
+# STEP 4: RESULTS
 if start_btn:
     if not user_api_key:
         st.error(f"Please enter your {model_choice} API Key in the sidebar.")
